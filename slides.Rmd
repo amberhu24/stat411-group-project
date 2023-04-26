@@ -1,0 +1,215 @@
+---
+title: "slides"
+author: "Amber Hu"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message=F)
+```
+
+```{r}
+######## Boostrapping Regression #######
+
+##### INITIALIZE ########
+# rm(list = ls())
+library(stargazer)
+
+##### transform and clean data
+data=read.csv("Life Expectancy Data.csv")
+data=data[data$Year==2014,]
+data=na.omit(data)
+data$Hepatitis.B=100-data$Hepatitis.B
+data$Polio=100-data$Polio
+data$Diphtheria=100-data$Diphtheria
+
+data$percentage.expenditure=log(data$percentage.expenditure)
+data$GDP=log(data$GDP)
+data$Population=log(data$Population)
+data$thinness..1.19.years=log(data$thinness..1.19.years)
+data$thinness.5.9.years=log(data$thinness.5.9.years)
+data$Hepatitis.B=log(data$Hepatitis.B)
+data$Polio=log(data$Polio)
+data$Diphtheria=log(data$Diphtheria)
+
+country=data$Country
+data=subset(data, select = -c(Country,Year,Status) )
+
+
+###########################
+### PAIRED BOOTSTRAPING
+
+paired.boot <- function(selected_variables, var.idx = -1) {
+  
+  y=data$Life.expectancy
+  x=data.frame(subset(data, select = selected_variables))
+  z <- cbind(y, x)
+  B <- 2000
+  
+  X <- as.matrix(z[,2:ncol(z)])
+  k = ncol(x) + 1
+  
+  
+  ##################
+  theta_hat     <- rep(0, k)           # theta_hat   = observed data estimate 
+  theta_boot    <- matrix(rep(rep(0, k), B), ncol = k, byrow = TRUE)      # thetas_boot = bootstrapped estimates 
+  set.seed(0)
+  
+  ###################
+  
+  mod0 <- lm(z[,1] ~ X)
+  s0 <- summary(mod0)
+  theta_hat <- s0$coefficients[1:k]
+  
+  
+  ## Paired Bootstrapping
+  for(b in 1:B) {
+    z.new <- z[sample(1:nrow(z), replace = TRUE), ]
+    X.new <- as.matrix(z.new[,2:ncol(z)])
+    model <- lm(z.new[, 1] ~ X.new)
+    s.new <- summary(model)
+    theta_boot[b, ] <- s.new$coefficients[1:k] 
+  }
+  
+  bias_boot <- colMeans(theta_boot) - theta_hat
+  
+  ## OUTPUT
+  theta_hat                    # OBSERVED DATA ESTIMATE
+  bias_boot                    # ESTIMATED BIAS (mean of bootstrap sample - obs. estimate)
+  
+  theta_mean <- theta_hat - bias_boot        # BIAS-CORRECTED ESTIMATE
+  
+  
+  ## Percentile method
+  ci.perc <- matrix(rep(rep(0, 2), k), ncol = 2)
+  sd.boot <- rep(0, k)
+  for (i in 1:k) {
+    ci.perc[i, ] <- quantile(theta_boot[ ,i], c(0.025, 0.975), na.rm = T)
+    sd.boot[i] <- sd(theta_boot[ ,i])
+  }
+  colnames(ci.perc) <- c("2.5%", "97.5%")
+  rownames(ci.perc) <- c("intercept", 1:(k-1))
+  ci.perc
+  sd.boot
+  ####
+  
+  res <- as.data.frame(cbind(theta_mean, ci.perc, sd.boot))
+  colnames(res) <- c("estimate", "2.5%", "97.5%", "sd")
+  rownames(res) <- c("intercept", selected_variables)
+  res$signif <- ifelse(((res$`2.5%` > 0) & (res$`97.5%` > 0)) |  ((res$`2.5%` < 0) & (res$`97.5%` < 0)),
+                       "Yes", "No")
+  
+  
+  ## PLOTS
+  if (var.idx != -1) {
+    hist(theta_boot[,var.idx], breaks = 40, col = "darkgray", border = "white", 
+         xlab = "Bootstrap Estimates", 
+         main = paste(c("Histogram of", selected_variables[var.idx - 1])))
+    abline(v = theta_hat[var.idx], col = "navy", lwd = 3)
+    segments(x0 = ci.perc[var.idx,1], y0 = 0, x1 = ci.perc[var.idx,2], 
+             col = "blue", lwd = 3)
+  }
+  
+  
+  stargazer(res, type = "text", summary = F)
+  
+}
+
+
+
+
+###############################################
+#################alternatively
+##### BOOTRAPPING REGRESSION
+library(boot)
+
+
+run.boot.ci <- function(selected_variables, var.idx = -1) {
+  
+  y=data$Life.expectancy
+  x=data.frame(subset(data, select = selected_variables))
+  z <- cbind(y, x)
+  B <- 2000
+  k = ncol(x) + 1
+  
+  #############
+  ## 1. Define a function that returns the statistic we want.
+  
+  theta.f <- function(z, ind) {
+    X.new <- as.matrix(z[ind,2:ncol(z)])
+    model <- lm(z[ind, 1] ~ X.new)
+    s.new <- summary(model)
+    s.new$coefficients[1:k]
+  }
+  
+  ## 2. get R bootstrap replicates of the statistic.
+  boot.obj <- boot(z, statistic = theta.f, R = B)
+ 
+  
+  ## 3. Use the boot.ci function to get the confidence intervals.
+  ci <- matrix(rep(0, k * 2),  ncol = 2)
+  sd <- rep(0, k)
+  for (th_idx in 1:k) {
+    boot.ci.res <- boot.ci(boot.out = boot.obj, conf = 0.95,
+                           type = c("perc", "bca"), 
+                           t0 = boot.obj$t0[th_idx],
+                           t = boot.obj$t[, th_idx])
+    ci[th_idx, ] <- boot.ci.res$bca[,4:5]
+    ### get sd
+    sd[th_idx] <- sd(boot.obj$t[,th_idx])
+    
+  }
+  
+  #### get mean cont
+  theta_hat <- boot.obj$t0
+  theta_boot <- boot.obj$t
+  bias_boot <- colMeans(theta_boot) - theta_hat
+  theta.corrected <- theta_hat - bias_boot        # BIAS-CORRECTED ESTIMATE
+  theta.corrected <- as.matrix(theta.corrected, ncol = 1)
+  
+  
+  #### output result
+  res <- as.data.frame(round(cbind(theta.corrected, ci[,1], ci[,2], sd), digits = 4))
+  colnames(res) <- c("estimate", "2.5%", "97.5%", "sd")
+  rownames(res) <- c("intercept", selected_variables)
+  res$signif <- ifelse(((res$`2.5%` > 0) & (res$`97.5%` > 0)) |  ((res$`2.5%` < 0) & (res$`97.5%` < 0)),
+                            "Yes", "No")
+  
+  ## PLOTS
+  if (var.idx != -1) {
+    hist(theta_boot[,var.idx], breaks = 40, col = "darkgray", border = "white", 
+         xlab = "Bootstrap Estimates", 
+         main = paste(c("Histogram of", selected_variables[var.idx - 1])))
+    abline(v = theta_hat[var.idx], col = "navy", lwd = 3)
+    segments(x0 = ci[var.idx,1], y0 = 0, x1 = ci[var.idx,2], 
+             col = "blue", lwd = 3)
+  }
+  
+  
+  stargazer(res, type = "text", summary = F)
+}
+
+
+var.names <- names(data[,2:19])
+fullModel.vars <- var.names
+# MLRTDist.vars <- var.names[c(2, 5, 8, 11, 17)]
+LMbic.vars <- var.names[c(1, 4, 10, 12, 13, 17)]
+gpriorLMbigN.vars <- var.names[c(1, 4, 12, 13, 17)]
+```
+
+
+```{r, echo=T}
+set.seed(25)
+
+
+
+run.boot.ci(fullModel.vars)
+run.boot.ci(LMbic.vars)
+for (i in 2:6) {
+  run.boot.ci(gpriorLMbigN.vars, i);
+}
+
+
+```
+
